@@ -40,7 +40,7 @@ There are no admin roles, no public registration, and no user accounts.
 ### 4.3 /feed Endpoint (RSS Output)
 
 - FR-11: The `/feed` route shall decode the parameters from the URL, fetch the original RSS feed, and return a valid XML RSS feed.
-- FR-12: The number of articles returned shall be calculated as: `days elapsed since start date × articles per day`, capped at the total number of articles in the original feed.
+- FR-12: The number of articles returned shall be calculated as: `days since start date (inclusive) × articles per day`, capped at the total number of articles in the original feed. On the start date itself, the first batch of articles is immediately available (day 1 of the schedule).
 - FR-13: Articles shall be returned in oldest-first order (i.e. working through the backlog chronologically).
 - FR-14: If the calculated number of unlocked articles equals or exceeds the total number of articles in the original feed, the system shall return a permanent (3xx) redirect to the original RSS URL.
 - FR-15: If the start date is in the future, the feed shall return zero articles until that date arrives.

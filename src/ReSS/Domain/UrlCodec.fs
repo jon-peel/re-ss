@@ -37,7 +37,7 @@ let decode (blob: string) : Result<FeedParams, DecodeError> =
         let  rawUrl    = HttpUtility.UrlDecode(parts.[1])
         let! url       = Uri.TryCreate(rawUrl, UriKind.Absolute) |> Result.ofTryParse InvalidUrl
         let! perDay    = Int32.TryParse(parts.[2]) |> Result.ofTryParse InvalidPerDay
-        let! _         = Result.require InvalidPerDay (perDay > 0)
+        let! _         = Result.require InvalidPerDay (perDay > 0 && perDay <= 1000)
         let! startDate =
             DateOnly.TryParseExact(parts.[3], "yyyy-MM-dd", null, Globalization.DateTimeStyles.None)
             |> Result.ofTryParse InvalidDate

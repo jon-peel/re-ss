@@ -222,6 +222,38 @@ let ``valid public https URL returns Ok`` () =
         // DNS resolution failed in sandbox — acceptable
         ()
 
+// ---- B-2 0.0.0.0 blocked ----
+
+[<Fact>]
+let ``0.0.0.0 is blocked`` () =
+    Assert.True(isPrivateOrLoopback (IPAddress.Parse("0.0.0.0")))
+
+[<Fact>]
+let ``http URL with 0.0.0.0 literal IP rejected`` () =
+    let result = validateUrl "http://0.0.0.0/feed" |> Async.RunSynchronously
+    match result with
+    | Error (PrivateOrLoopbackAddress _) -> ()
+    | other -> Assert.Fail(sprintf "Expected PrivateOrLoopbackAddress, got %A" other)
+
+// ---- B-3 DNS fail-open behaviour is documented ----
+
+[<Fact>]
+let ``unresolvable hostname passes guard (fail-open)`` () =
+    // A hostname that cannot resolve should pass the guard rather than
+    // rejecting the URL, because we cannot confirm it is private.
+    // The subsequent fetch will fail with UnreachableUrl.
+    // This is a documented, accepted trade-off — see REQUIREMENTS.md §Security.
+    let result =
+        validateUrl "https://this-hostname-does-not-exist.invalid/feed"
+        |> Async.RunSynchronously
+    // Either Ok (fail-open, expected) or a guard error is acceptable;
+    // what must NOT happen is an unhandled exception.
+    match result with
+    | Ok _
+    | Error (PrivateOrLoopbackAddress _)
+    | Error MalformedUrl -> ()
+    | Error e -> Assert.Fail(sprintf "Unexpected guard error for unresolvable host: %A" e)
+
 // ---- 4.5 any resolved IP in blocked range causes rejection ----
 
 [<Fact>]

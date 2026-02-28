@@ -74,8 +74,8 @@
 ## 11. E2E Tests (Playwright)
 
 - [x] 11.1 Configure `tests/ReSS.E2E` project: start app via `WebApplicationFactory` or local process, Playwright headless setup, all tests tagged `[<Trait("Category","E2E")>]`
-- [ ] 11.2 Implement `FormTests.fs`: page loads with form visible; empty submit shows errors; valid RSS URL → generated URL appears; copy button; summary message correct; advanced section collapsed by default; expand reveals start date; future start date → 0 articles; unreachable URL error; non-RSS URL error
-- [ ] 11.3 Implement `FeedEndpointTests.fs`: valid blob → correct item count; feed title has `n/t`; items oldest-first; caught-up → redirect; malformed blob → 400; future start date → 0 items
+- [x] 11.2 Implement `FormTests.fs`: page loads with form visible; empty submit shows errors; valid RSS URL → generated URL appears; copy button; summary message correct; advanced section collapsed by default; expand reveals start date; future start date → 0 articles; unreachable URL error; non-RSS URL error
+- [x] 11.3 Implement `FeedEndpointTests.fs`: valid blob → correct item count; feed title has `n/t`; items oldest-first; caught-up → redirect; malformed blob → 400; future start date → 0 items
 
 ## 12. Hardening and Deployment
 

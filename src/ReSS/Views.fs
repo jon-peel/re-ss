@@ -38,7 +38,15 @@ details { margin-top: 1rem; }
 summary { cursor: pointer; font-weight: 600; }
 """ ]
         ]
-        body [] pageBody
+        body [] (pageBody @ [
+            script [] [ rawText """
+  document.querySelectorAll('.copy-btn[data-copy-url]').forEach(function(b) {
+    b.addEventListener('click', function() {
+      navigator.clipboard.writeText(b.getAttribute('data-copy-url'));
+    });
+  });
+""" ]
+        ])
     ]
 
 let formView (state: FormState) =
@@ -66,7 +74,7 @@ let formView (state: FormState) =
                 button [
                     _type "button"
                     _class "copy-btn"
-                    attr "onclick" (sprintf "navigator.clipboard.writeText('%s')" url)
+                    attr "data-copy-url" url
                 ] [ str "Copy" ]
             ]
         | _ -> emptyText

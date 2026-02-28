@@ -45,6 +45,14 @@ let ``over-elapsed returns RedirectToSource`` () =
     let result = calculate (clock today) start 10<articles/day> 50<articles>
     Assert.Equal(RedirectToSource, result)
 
+// ---- R-2 overflow regression ----
+
+[<Fact>]
+let ``very old start date with high perDay returns RedirectToSource without overflow`` () =
+    let veryOldStart = DateOnly(1900, 1, 1)
+    let result = calculate (clock today) veryOldStart 1000<articles/day> 100<articles>
+    Assert.Equal(RedirectToSource, result)
+
 // ---- 5.3 FsCheck properties ----
 
 type DripInputs = { Start: DateOnly; PerDay: int; Total: int; TodayOffset: int }

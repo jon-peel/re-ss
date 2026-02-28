@@ -124,6 +124,26 @@ let ``encode→decode round-trips all fields`` (p: FeedParams) =
         decoded.StartDate = p.StartDate
     | Error e -> false
 
+// ---- R-3 perDay upper-bound ----
+
+[<Fact>]
+let ``decode with perDay = 1001 returns InvalidPerDay`` () =
+    let payload = "v1::https%3A%2F%2Fexample.com::1001::2025-01-01"
+    let bad =
+        Convert.ToBase64String(Text.Encoding.UTF8.GetBytes(payload))
+        |> fun s -> s.TrimEnd('=').Replace('+','-').Replace('/','_')
+    Assert.Equal(Error InvalidPerDay, decode bad)
+
+[<Fact>]
+let ``decode with perDay = 1000 returns Ok`` () =
+    let payload = "v1::https%3A%2F%2Fexample.com::1000::2025-01-01"
+    let blob =
+        Convert.ToBase64String(Text.Encoding.UTF8.GetBytes(payload))
+        |> fun s -> s.TrimEnd('=').Replace('+','-').Replace('/','_')
+    match decode blob with
+    | Ok p    -> Assert.Equal(1000<articles/day>, p.PerDay)
+    | Error e -> Assert.Fail(sprintf "Expected Ok, got %A" e)
+
 // ---- 3.10 URLs with special characters survive round-trip ----
 
 [<Fact>]

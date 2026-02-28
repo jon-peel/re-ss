@@ -115,9 +115,13 @@ type FeedEndpointTests(bfx: BrowserFixture) =
             let! body = resp.TextAsync()
             let its   = items body
             Assert.Equal(2, its.Length)
-            // Fixture: Item 1 (oldest) → pubDate Jan 01; Item 2 → pubDate Jan 02
-            let firstTitle = its.[0].Element(XName.Get("title")).Value
-            Assert.Contains("oldest", firstTitle)
+            let pubDates =
+                its
+                |> List.map (fun i ->
+                    DateTimeOffset.Parse(i.Element(XName.Get("pubDate")).Value))
+            Assert.True(
+                pubDates.[0] <= pubDates.[1],
+                sprintf "Expected oldest-first but got %A then %A" pubDates.[0] pubDates.[1])
         })
 
     [<Fact>]

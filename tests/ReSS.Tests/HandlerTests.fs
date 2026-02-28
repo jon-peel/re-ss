@@ -71,7 +71,6 @@ let private makeFactory (clock: Clock) (stubHandler: HttpMessageHandler) =
 
 let private fixedClock (d: DateOnly) : Clock = fun () -> d
 let private todayClock = fixedClock (DateOnly(2025, 1, 15))
-let private futureClock = fixedClock (DateOnly(2025, 1, 15))  // start date will be in the past for caught-up test
 
 // ---- 1.7 Smoke tests ----
 

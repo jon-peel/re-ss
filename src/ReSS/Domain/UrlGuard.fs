@@ -32,11 +32,12 @@ let rec isPrivateOrLoopback (ip: IPAddress) : bool =
         // ::ffff:0:0/96 — IPv4-mapped: extract the embedded IPv4 and re-check
         (ip.IsIPv4MappedToIPv6 && isPrivateOrLoopback (ip.MapToIPv4()))
     | AddressFamily.InterNetwork ->
-        inRange ip "127.0.0.0"   8  ||   // loopback
-        inRange ip "169.254.0.0" 16 ||   // link-local
-        inRange ip "10.0.0.0"    8  ||   // RFC1918 class A
-        inRange ip "172.16.0.0"  12 ||   // RFC1918 class B
-        inRange ip "192.168.0.0" 16      // RFC1918 class C
+        ip.Equals(IPAddress.Any)         ||   // 0.0.0.0 — connects to localhost on Linux
+        inRange ip "127.0.0.0"   8       ||   // loopback
+        inRange ip "169.254.0.0" 16      ||   // link-local
+        inRange ip "10.0.0.0"    8       ||   // RFC1918 class A
+        inRange ip "172.16.0.0"  12      ||   // RFC1918 class B
+        inRange ip "192.168.0.0" 16           // RFC1918 class C
     | _ -> false
 
 // ---- public API ----

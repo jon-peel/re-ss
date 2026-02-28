@@ -98,3 +98,16 @@ There are no admin roles, no public registration, and no user accounts.
 ## 11. Open Questions
 
 There are no outstanding open questions.
+
+## 12. Security — Known Limitations
+
+### SSRF Guard: DNS fail-open
+`UrlGuard.validateUrl` resolves the hostname via DNS and checks resolved IPs against
+known private/loopback ranges. If DNS resolution fails (NXDOMAIN, timeout, resolver
+outage), the guard passes the URL through. The subsequent HTTP fetch will fail with
+`UnreachableUrl` in the common case.
+
+**Accepted trade-off:** Rejecting on DNS failure would break legitimate feeds when the
+resolver is temporarily unavailable. Operators who need strict fail-closed behaviour
+should run the application behind a network policy that blocks RFC1918 destinations
+regardless of application-layer checks.

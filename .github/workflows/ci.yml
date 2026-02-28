@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Restore
+        run: dotnet restore
+      - name: Build
+        run: dotnet build --no-restore -c Release
+
+  test-unit:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Unit tests
+        run: >
+          dotnet test tests/ReSS.Tests/ReSS.Tests.fsproj
+          --filter "Category!=Integration&Category!=E2E"
+          -c Release --logger "github;verbosity=normal"
+
+  test-integration:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Integration tests
+        run: >
+          dotnet test tests/ReSS.Tests/ReSS.Tests.fsproj
+          --filter "Category=Integration"
+          -c Release --logger "github;verbosity=normal"
+
+  test-e2e:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Install Playwright browsers
+        run: |
+          dotnet build tests/ReSS.E2E/ReSS.E2E.fsproj -c Release
+          pwsh tests/ReSS.E2E/bin/Release/net10.0/playwright.ps1 install --with-deps chromium
+      - name: E2E tests
+        run: >
+          dotnet test tests/ReSS.E2E/ReSS.E2E.fsproj
+          --filter "Category=E2E"
+          -c Release --logger "github;verbosity=normal"
+
+  docker:
+    needs: [ test-unit, test-integration, test-e2e ]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Docker image
+        run: docker build -t re-ss:${{ github.sha }} .

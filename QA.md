@@ -1,318 +1,400 @@
 # QA Review — RSS Catch-Up Feed Generator
-**Branch:** `implement/rss-catchup-feed-generator`
+
 **Reviewer:** Quinn (QA)
-**Status:** ❌ BLOCKED — resolve all High items before merge
+**Date:** 2026-02-28
+**Status:** ❌ BLOCKED — 3 issues must be resolved before merge
 
 ---
 
-## Blocking Issues (must fix before merge)
+## How to use this file
+
+Work through the **Blocking Issues** first. Each issue has a Problem, the exact change
+required, and an Acceptance Criteria checklist. Do not mark a checkbox until the code
+change and its test(s) are both in place.
+
+The **Recommended Fixes** are not blocking but should be done in the same pass where
+practical.
 
 ---
 
-### B-1 — FR-07 Missing: No Copy-to-Clipboard Button
+## Blocking Issues
 
-**File:** `src/ReSS/Views.fs`
+---
+
+### B-1 — Dockerfile targets .NET 9 but project targets `net10.0`
+
+**File:** `Dockerfile`, lines 1 and 11
 
 **Problem:**
-FR-07 requires a copy-to-clipboard button alongside the generated URL. The result section
-currently renders only a `<code>` block with no button.
+The project's `<TargetFramework>` is `net10.0` and all NuGet packages pin to `10.x`
+versions (`Microsoft.Extensions.Caching.Memory 10.0.3`, `System.ServiceModel.Syndication
+10.0.3`). The Dockerfile pulls `.NET 9` SDK and runtime images. The `dotnet publish`
+step inside Docker will fail with a TFM mismatch error. Every Docker build on CI and
+locally is broken.
 
-**What to implement:**
-Add a `<button>` adjacent to the `<code>` element in the `Success` branch of `resultSection`.
-The button should call `navigator.clipboard.writeText(...)` with the generated URL as its argument.
+**Fix:**
+Update both `FROM` lines in `Dockerfile`:
 
-A minimal inline approach (no external JS file needed):
+```dockerfile
+# Before
+FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
+...
+FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS runtime
 
-```html
-<button onclick="navigator.clipboard.writeText('GENERATED_URL')">Copy</button>
+# After
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+...
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 ```
 
-In Giraffe ViewEngine this looks like:
-
-```fsharp
-button [
-    _type "button"
-    attr "onclick" (sprintf "navigator.clipboard.writeText('%s')" url)
-] [ str "Copy" ]
-```
-
-Add a style entry for this button so it doesn't inherit the `button[type=submit]` styles —
-either scope the existing rule to `button[type=submit]` only (it already is) or add a
-`.copy-btn` class with its own style.
+No other changes are needed. The rest of the Dockerfile is correct.
 
 **Acceptance criteria:**
-- [ ] A button is visible in the result section after successful form submission.
-- [ ] Clicking it copies the generated URL to the clipboard.
-- [ ] The button is styled distinctly from the submit button.
-- [ ] The E2E test `valid RSS URL produces generated feed URL` (FormTests) is extended or a new
-      test added to assert the copy button is present.
+- [ ] `docker build -t re-ss:test .` completes without error locally or in CI.
+- [ ] The built image runs and `GET /` returns HTTP 200.
 
 ---
 
-### B-2 — `UrlCodec.decode` Accepts `perDay ≤ 0`
-
-**File:** `src/ReSS/Domain/UrlCodec.fs`
-
-**Problem:**
-`Int32.TryParse` succeeds for `0` and negative integers. A crafted blob with `perDay = 0`
-decodes as `Ok` and is passed to `DripCalculator`, which returns `ShowItems 0` forever —
-silently serving a permanently empty feed. `perDay = -5` is equally nonsensical.
-
-**What to implement:**
-After the `Int32.TryParse` step in `decode`, add a positivity guard. The idiomatic place is
-immediately after parsing, still inside the `monad` block:
-
-```fsharp
-let! perDay    = Int32.TryParse(parts.[2]) |> Result.ofTryParse InvalidPerDay
-let! _         = Result.require InvalidPerDay (perDay > 0)
-```
-
-> **On unsigned types:** `uint32` still admits `0`, so it doesn't eliminate the need for an
-> explicit `> 0` check. Keeping `int` with the explicit guard is simpler and more idiomatic.
-> Don't change the type.
-
-**Acceptance criteria:**
-- [ ] `decode` of a blob containing `perDay = 0` returns `Error InvalidPerDay`.
-- [ ] `decode` of a blob containing `perDay = -1` returns `Error InvalidPerDay`.
-- [ ] The existing round-trip property test still passes (it generates `perDay` in `1..100`).
-- [ ] Add unit tests to `UrlCodecTests.fs`:
-  - `decode with perDay = 0 returns InvalidPerDay`
-  - `decode with perDay = -1 returns InvalidPerDay`
-
----
-
-### B-3 — `UrlGuard` IPv6 Private Ranges Incomplete
+### B-2 — `0.0.0.0` is not blocked by the SSRF guard
 
 **File:** `src/ReSS/Domain/UrlGuard.fs`
 
 **Problem:**
-Two IPv6 private address classes are not blocked:
+`http://0.0.0.0/internal-api` passes `isPrivateOrLoopback` because `0.0.0.0` does not
+fall inside any of the five checked ranges (`127.x`, `169.254.x`, `10.x`, `172.16-31.x`,
+`192.168.x`). On Linux, connecting to `0.0.0.0` on a TCP port binds to the wildcard
+interface and connects to localhost. A crafted feed URL using this address bypasses the
+guard and reaches internal services. There are no existing tests covering this address.
 
-1. **`fc00::/7` — Unique Local Addresses (ULA).** These are IPv6's equivalent of RFC1918.
-   Any address where the first 7 bits are `1111110x` (i.e. first byte `0xFC` or `0xFD`) is a
-   private LAN address. Example: `http://[fd12:3456:789a::1]/feed` currently passes the guard.
-
-2. **`::ffff:0:0/96` — IPv4-mapped IPv6 addresses.** A URL like
-   `http://[::ffff:192.168.1.1]/feed` encodes a private IPv4 address in IPv6 notation. The
-   current guard only checks `AddressFamily.InterNetwork` for private ranges, so the
-   IPv6-mapped form bypasses it entirely.
-
-**What to implement:**
-Extend the `InterNetworkV6` branch of `isPrivateOrLoopback`:
+**Fix:**
+Add an exact equality check inside the `AddressFamily.InterNetwork` branch of
+`isPrivateOrLoopback`:
 
 ```fsharp
-| AddressFamily.InterNetworkV6 ->
-    ip.Equals(IPAddress.IPv6Loopback)
-    // fe80::/10 — link-local
-    || (ip.GetAddressBytes().[0] = 0xfeuy && (ip.GetAddressBytes().[1] &&& 0xC0uy) = 0x80uy)
-    // fc00::/7 — Unique Local (ULA): first byte is 0xFC or 0xFD
-    || (ip.GetAddressBytes().[0] &&& 0xFEuy = 0xFCuy)
-    // ::ffff:0:0/96 — IPv4-mapped: extract the embedded IPv4 and re-check
-    || (ip.IsIPv4MappedToIPv6 && isPrivateOrLoopback (ip.MapToIPv4()))
+| AddressFamily.InterNetwork ->
+    ip.Equals(IPAddress.Any)         ||   // 0.0.0.0 — connects to localhost on Linux
+    inRange ip "127.0.0.0"   8       ||   // loopback
+    inRange ip "169.254.0.0" 16      ||   // link-local
+    inRange ip "10.0.0.0"    8       ||   // RFC1918 class A
+    inRange ip "172.16.0.0"  12      ||   // RFC1918 class B
+    inRange ip "192.168.0.0" 16           // RFC1918 class C
 ```
 
-> Note: the last line is a recursive call. Because `MapToIPv4()` returns an
-> `AddressFamily.InterNetwork` address, it will hit the IPv4 branch — no infinite recursion.
-> `IPAddress.IsIPv4MappedToIPv6` is available on .NET 6+.
+`IPAddress.Any` is the pre-defined `0.0.0.0` constant — no parsing required.
+
+Then add a unit test in `tests/ReSS.Tests/UrlGuardTests.fs`:
+
+```fsharp
+[<Fact>]
+let ``0.0.0.0 is blocked`` () =
+    Assert.True(isPrivateOrLoopback (IPAddress.Parse("0.0.0.0")))
+
+[<Fact>]
+let ``http URL with 0.0.0.0 literal IP rejected`` () =
+    let result = validateUrl "http://0.0.0.0/feed" |> Async.RunSynchronously
+    match result with
+    | Error (PrivateOrLoopbackAddress _) -> ()
+    | other -> Assert.Fail(sprintf "Expected PrivateOrLoopbackAddress, got %A" other)
+```
 
 **Acceptance criteria:**
-- [ ] `isPrivateOrLoopback (IPAddress.Parse("fd00::1"))` returns `true`.
-- [ ] `isPrivateOrLoopback (IPAddress.Parse("fc00::1"))` returns `true`.
-- [ ] `isPrivateOrLoopback (IPAddress.Parse("::ffff:192.168.1.1"))` returns `true`.
-- [ ] `isPrivateOrLoopback (IPAddress.Parse("::ffff:8.8.8.8"))` returns `false`.
-- [ ] `isPrivateOrLoopback (IPAddress.Parse("2001:db8::1"))` returns `false` (public).
-- [ ] Add unit tests to `UrlGuardTests.fs` covering all of the above cases.
-- [ ] Add an FsCheck property for the full ULA range (`fc00::` – `fdff::...`), following the
-      same pattern as the existing `127.x.x.x` range property.
+- [ ] `isPrivateOrLoopback (IPAddress.Parse("0.0.0.0"))` returns `true`.
+- [ ] `validateUrl "http://0.0.0.0/feed"` returns `Error (PrivateOrLoopbackAddress _)`.
+- [ ] Both unit tests above are added to `UrlGuardTests.fs` and pass.
+- [ ] All existing `UrlGuardTests` still pass.
 
 ---
 
-## Recommended Fixes (non-blocking, same pass preferred)
+### B-3 — DNS fail-open has no test coverage and no documented mitigation
 
----
-
-### R-1 — FR-08 Summary Message Wording Mismatch
-
-**File:** `src/ReSS/Views.fs`, line 58
+**File:** `src/ReSS/Domain/UrlGuard.fs`, lines 52–59
 
 **Problem:**
-FR-08 specifies: `"Your new feed has n of t articles ready"`.
-Current output: `"n of t articles ready"`.
+When DNS resolution fails (NXDOMAIN, timeout, network error), the guard returns an empty
+`ips` array, `Array.tryFind` finds nothing to block, and `validateUrl` returns `Ok uri`.
+The URL passes the SSRF guard silently. The code comment acknowledges this but it is
+categorised as an "accepted trade-off" with no test and no operator documentation.
 
-**Fix:** Change the format string:
+The risk: if an attacker can cause DNS to fail for their hostname at guard-check time (e.g.
+temporary NXDOMAIN), the guard is bypassed. The subsequent `fetchFeed` will likely fail with
+`UnreachableUrl`, but that is not guaranteed if the hostname resolves differently on retry.
+
+This needs two things: a test that locks in the fail-open behaviour so it cannot silently
+change to fail-closed (breaking prod), and a note in `REQUIREMENTS.md` or `appsettings.json`
+so operators know this is a known limitation.
+
+**Fix — Part 1: add a test that documents the behaviour**
+
+Add to `tests/ReSS.Tests/UrlGuardTests.fs`:
+
 ```fsharp
-// before
-str (sprintf "%d of %d articles ready" n t)
-
-// after
-str (sprintf "Your new feed has %d of %d articles ready" n t)
+[<Fact>]
+let ``unresolvable hostname passes guard (fail-open)`` () =
+    // A hostname that cannot resolve should pass the guard rather than
+    // rejecting the URL, because we cannot confirm it is private.
+    // The subsequent fetch will fail with UnreachableUrl.
+    // This is a documented, accepted trade-off — see REQUIREMENTS.md §Security.
+    let result =
+        validateUrl "https://this-hostname-does-not-exist.invalid/feed"
+        |> Async.RunSynchronously
+    // Either Ok (fail-open, expected) or a guard error is acceptable;
+    // what must NOT happen is an unhandled exception.
+    match result with
+    | Ok _
+    | Error (PrivateOrLoopbackAddress _)
+    | Error MalformedUrl -> ()
+    | Error e -> Assert.Fail(sprintf "Unexpected guard error for unresolvable host: %A" e)
 ```
 
-Update any E2E test that asserts on `"articles ready"` — the assertion `Assert.Contains("articles ready", ...)` will still pass, but update `Assert.StartsWith("0 of", ...)` in `FormTests` to `Assert.StartsWith("Your new feed has 0 of", ...)`.
+**Fix — Part 2: add a note to `REQUIREMENTS.md`**
+
+Append the following section (or merge into an existing Security section):
+
+```markdown
+## Security — Known Limitations
+
+### SSRF Guard: DNS fail-open
+`UrlGuard.validateUrl` resolves the hostname via DNS and checks resolved IPs against
+known private/loopback ranges. If DNS resolution fails (NXDOMAIN, timeout, resolver
+outage), the guard passes the URL through. The subsequent HTTP fetch will fail with
+`UnreachableUrl` in the common case.
+
+**Accepted trade-off:** Rejecting on DNS failure would break legitimate feeds when the
+resolver is temporarily unavailable. Operators who need strict fail-closed behaviour
+should run the application behind a network policy that blocks RFC1918 destinations
+regardless of application-layer checks.
+```
+
+**Acceptance criteria:**
+- [ ] The `unresolvable hostname passes guard (fail-open)` test is added and passes.
+- [ ] The test does not throw any exception (the guard must handle all DNS failure modes).
+- [ ] A Security section documenting this limitation is added to `REQUIREMENTS.md`.
 
 ---
 
-### R-2 — DNS Resolution Blocks a ThreadPool Thread
+## Recommended Fixes
 
-**File:** `src/ReSS/Domain/UrlGuard.fs`, line 54
-
-**Problem:**
-`Dns.GetHostAddresses(host)` is synchronous and blocks a ThreadPool thread for the full
-DNS resolution time (potentially 30+ seconds on a slow resolver) inside an `async` block.
-
-**Fix:** Replace with the async overload:
-```fsharp
-// before
-try Dns.GetHostAddresses(host)
-with _ -> [||]
-
-// after
-try
-    let! resolved = Dns.GetHostAddressesAsync(host) |> Async.AwaitTask
-    resolved
-with _ -> [||]
-```
-
-The surrounding `let ips = ...` will need to become a `let! ips = async { ... }` binding.
-Restructure the block so `ips` is bound with `let!`:
-
-```fsharp
-let! ips =
-    match IPAddress.TryParse(host) with
-    | true, ip -> async { return [| ip |] }
-    | false, _ ->
-        async {
-            try
-                return! Dns.GetHostAddressesAsync(host) |> Async.AwaitTask
-            with _ ->
-                return [||]
-        }
-```
+These are not blocking but should be addressed in the same development pass where
+practical.
 
 ---
 
-### R-3 — Unresolvable Hostname Silently Passes Guard
+### R-1 — XSS via `Host` header in copy-button `onclick`
 
-**File:** `src/ReSS/Domain/UrlGuard.fs`, lines 54–55
+**File:** `src/ReSS/Views.fs`, lines ~84–89
 
 **Problem:**
-If DNS resolution fails (NXDOMAIN, timeout, network error), `ips` is `[||]`, and
-`Array.tryFind` returns `None`, so the guard returns `Ok uri`. The URL silently passes
-the security check.
-
-**Fix (lightweight):** Add a comment making the decision explicit. If you want strictness,
-treat an empty `ips` result as a separate `UrlGuardError` (e.g. `UnresolvableHost`). For
-the current audience this is an acceptable risk — the fetch will fail with `UnreachableUrl`
-in any case — but the intent should be documented:
+The copy button's `onclick` attribute is built by string interpolation:
 
 ```fsharp
-// If DNS resolution fails, ips will be empty and the URL will pass the guard.
-// The subsequent fetch will fail with UnreachableUrl in that case.
-// This is an accepted trade-off for the current use case.
+attr "onclick" (sprintf "navigator.clipboard.writeText('%s')" url)
 ```
+
+`url` contains `ctx.Request.Host.Value` (the raw HTTP `Host` header). Giraffe.ViewEngine
+HTML-encodes attribute values, but a Host header containing a single quote — e.g.
+`evil.com';alert(1)//` — breaks the JavaScript string literal inside the attribute. If
+the app is exposed without a reverse proxy that normalises Host headers, an attacker can
+craft a URL that renders malicious JS for anyone who receives the share link.
+
+**Fix:**
+Remove the inline JS and use a `data-` attribute instead. Giraffe.ViewEngine
+HTML-encodes attribute values, making `data-` injection safe:
+
+```fsharp
+// In Views.fs, replace the button node:
+button [
+    _type "button"
+    _class "copy-btn"
+    attr "data-copy-url" url
+] [ str "Copy" ]
+```
+
+Add a small script block at the bottom of `layout`'s `<body>`:
+
+```fsharp
+script [] [ rawText """
+  document.querySelectorAll('.copy-btn[data-copy-url]').forEach(function(b) {
+    b.addEventListener('click', function() {
+      navigator.clipboard.writeText(b.getAttribute('data-copy-url'));
+    });
+  });
+""" ]
+```
+
+This eliminates the Host-header injection surface entirely.
+
+**Acceptance criteria:**
+- [ ] The `onclick` attribute no longer contains a JS string literal wrapping `url`.
+- [ ] Clicking the copy button still copies the generated URL to the clipboard (verify
+      manually or in the E2E `copy button is present` test).
+- [ ] A Host header value containing `'` does not produce a JS syntax error in the page.
 
 ---
 
-### R-4 — Dead `AggregateException` Handler in `FeedFetcher`
+### R-2 — `DripCalculator` silent integer overflow on extreme inputs
 
-**File:** `src/ReSS/Domain/FeedFetcher.fs`, lines 69–73
+**File:** `src/ReSS/Domain/DripCalculator.fs`, line 7
 
 **Problem:**
-`Async.AwaitTask` automatically unwraps `AggregateException` and re-raises the inner
-exception before the F# `with` handler sees it. The `AggregateException` arm is never
-reached — it is dead code.
-
-**Fix:** Remove the arm entirely:
 ```fsharp
-// Remove these lines:
-| :? AggregateException as ae
-    when ae.InnerExceptions |> Seq.exists (fun e -> e :? HttpRequestException) ->
-    logger |> Option.iter (fun l ->
-        l.LogWarning("Unreachable URL: {sourceUrl}", url))
-    return Error UnreachableUrl
+let unlocked = min (daysElapsed * int perDay * 1<articles>) total
 ```
+F# arithmetic defaults to unchecked (wrapping) overflow. For a start date far in the
+past with a high `perDay`, `daysElapsed * int perDay` can overflow `Int32.MaxValue`,
+wrapping to a large negative number. `min (negative) total` returns the negative, and
+`ShowItems (negative<articles>)` is returned — serving no items forever despite being
+caught up.
+
+**Fix:**
+Use an intermediate `int64` calculation before clamping back to `int`:
+
+```fsharp
+let calculate (clock: Clock) (startDate: DateOnly) (perDay: int<articles/day>) (total: int<articles>) : DripResult =
+    let today        = clock ()
+    let daysElapsed  = if today < startDate then 0 else today.DayNumber - startDate.DayNumber + 1
+    let unlockedRaw  = min (int64 daysElapsed * int64 (int perDay)) (int64 (int total))
+    let unlocked     = int unlockedRaw * 1<articles>
+    if unlocked >= total then RedirectToSource
+    else ShowItems unlocked
+```
+
+Add a regression test to `DripCalculatorTests.fs`:
+
+```fsharp
+[<Fact>]
+let ``very old start date with high perDay returns RedirectToSource without overflow`` () =
+    let veryOldStart = DateOnly(1900, 1, 1)
+    let result = calculate (clock today) veryOldStart 1000<articles/day> 100<articles>
+    Assert.Equal(RedirectToSource, result)
+```
+
+**Acceptance criteria:**
+- [ ] The test above is added and passes.
+- [ ] All existing `DripCalculatorTests` still pass.
 
 ---
 
-### R-5 — Items Sorted Twice
+### R-3 — No upper-bound validation on `perDay` in `UrlCodec.decode`
 
-**Files:** `src/ReSS/Handlers.fs` line 145, `src/ReSS/Domain/FeedBuilder.fs` lines 9–13
+**File:** `src/ReSS/Domain/UrlCodec.fs`, line 29
 
 **Problem:**
-`getFeedHandler` sorts items by `PublishDate` before slicing. `buildFeed` then sorts them
-again. The second sort is redundant. The handler's sort also doesn't handle
-`DateTimeOffset.MinValue` (items with no pubDate), while `buildFeed`'s sort does —
-the edge case handling is split across two places.
+`decode` only checks `perDay > 0`. A crafted blob with `perDay = Int32.MaxValue`
+(2,147,483,647) is accepted and passed to `DripCalculator`, compounding the overflow
+risk described in R-2.
 
-**Fix:** Remove the sort from the handler and let `buildFeed` own it exclusively:
+The form enforces `max="1000"` on the browser side, but blobs can be crafted manually.
+
+**Fix:**
+Extend the positivity guard to include an upper bound:
+
 ```fsharp
-// In getFeedHandler, change:
-let slice = allItems |> List.sortBy (fun i -> i.PublishDate) |> List.truncate (int n)
+// Change:
+let! _ = Result.require InvalidPerDay (perDay > 0)
 
 // To:
-let slice = allItems |> List.truncate (int n)
+let! _ = Result.require InvalidPerDay (perDay > 0 && perDay <= 1000)
 ```
 
-`buildFeed` already sorts correctly with `MinValue` handling and will produce the right
-oldest-first order.
+Add a unit test to `UrlCodecTests.fs`:
 
-> **Important:** This changes the slicing behaviour. Previously the handler sorted then sliced,
-> meaning the `n` oldest items were returned. After this change, the handler truncates the raw
-> (upstream-ordered) list, then `buildFeed` sorts. If the upstream feed is newest-first
-> (common in RSS), `List.truncate n` on the unsorted list takes the `n` newest, and
-> `buildFeed` sorts those oldest-first — which is **wrong**.
->
-> The correct fix is therefore the opposite: keep the sort-then-truncate in the handler, and
-> **remove the redundant sort from `buildFeed`**, replacing it with a trust that its input
-> is already sorted. Add a comment to `buildFeed` noting the expected precondition.
+```fsharp
+[<Fact>]
+let ``decode with perDay = 1001 returns InvalidPerDay`` () =
+    let payload = "v1::https%3A%2F%2Fexample.com::1001::2025-01-01"
+    let bad =
+        Convert.ToBase64String(Text.Encoding.UTF8.GetBytes(payload))
+        |> fun s -> s.TrimEnd('=').Replace('+','-').Replace('/','_')
+    Assert.Equal(Error InvalidPerDay, decode bad)
+```
+
+**Acceptance criteria:**
+- [ ] `decode` of a blob with `perDay = 1001` returns `Error InvalidPerDay`.
+- [ ] `decode` of a blob with `perDay = 1000` returns `Ok`.
+- [ ] All existing `UrlCodecTests` still pass.
 
 ---
 
-### R-6 — No HTTP Timeout on `HttpClient`
+### R-4 — Dead `futureClock` binding in `HandlerTests.fs`
 
-**File:** `src/ReSS/Program.fs`, line 27
+**File:** `tests/ReSS.Tests/HandlerTests.fs`, lines 64–65
 
 **Problem:**
-`HttpClient.Timeout` defaults to 100 seconds. For arbitrary user-submitted URLs, a slow or
-misbehaving upstream server could hold a connection for close to two minutes.
-
-**Fix:** Configure a timeout when registering the client:
 ```fsharp
-// Replace:
-builder.Services.AddHttpClient() |> ignore
-
-// With:
-builder.Services.AddHttpClient(fun (client: Net.Http.HttpClient) ->
-    client.Timeout <- TimeSpan.FromSeconds(15.0)
-) |> ignore
+let private todayClock  = fixedClock (DateOnly(2025, 1, 15))
+let private futureClock = fixedClock (DateOnly(2025, 1, 15))  // ← same date, unused
 ```
+`futureClock` is never referenced. The comment is misleading (same date as `todayClock`).
+This will likely produce a compiler warning and confuses future maintainers.
+
+**Fix:**
+Delete the `futureClock` binding entirely. If a future test needs a "future" clock, define
+it locally in that test with a clearly future date.
+
+**Acceptance criteria:**
+- [ ] `futureClock` binding is removed.
+- [ ] All `HandlerTests` still pass.
+- [ ] No unused-binding compiler warning on that file.
 
 ---
 
-## Test Coverage Gaps
+### R-5 — E2E `items are returned oldest-first` asserts on a fixture title substring
 
-The following scenarios have no test at any layer and should be added:
+**File:** `tests/ReSS.E2E/FeedEndpointTests.fs`, lines ~98–101
 
-| Gap | Suggested location |
-|-----|--------------------|
-| `perDay = 0` blob decodes to `InvalidPerDay` | `UrlCodecTests.fs` |
-| `perDay = -1` blob decodes to `InvalidPerDay` | `UrlCodecTests.fs` |
-| IPv6 ULA address (`fd00::1`) is blocked | `UrlGuardTests.fs` |
-| IPv4-mapped IPv6 private (`::ffff:192.168.1.1`) is blocked | `UrlGuardTests.fs` |
-| IPv4-mapped IPv6 public (`::ffff:8.8.8.8`) is not blocked | `UrlGuardTests.fs` |
-| Copy button is present in result section | `FormTests.fs` (E2E) |
+**Problem:**
+```fsharp
+let firstTitle = its.[0].Element(XName.Get("title")).Value
+Assert.Contains("oldest", firstTitle)
+```
+This works only because the fixture happens to include `"(oldest)"` in the first item's
+title. If the fixture is ever cleaned up, or if items come back in wrong order with
+`"oldest"` in a non-first item by coincidence, the test would give a false positive or
+silently break. The test should assert on the `pubDate` ordering directly.
+
+**Fix:**
+Replace the title-substring check with an explicit date-ordering check:
+
+```fsharp
+[<Fact>]
+member _.``items are returned oldest-first`` () =
+    let startDate = DateOnly(2025, 5, 31)
+    let blob      = makeBlob FeedUrl 1 startDate
+    let handler   = StubHandler [FeedUrl, makeRssResponse()]
+    withApi handler (fixedClock today) (fun _ apiCtx -> task {
+        let! resp = apiCtx.GetAsync(sprintf "/feed/%s" blob)
+        let! body = resp.TextAsync()
+        let its   = items body
+        Assert.Equal(2, its.Length)
+        let pubDates =
+            its
+            |> List.map (fun i ->
+                DateTimeOffset.Parse(i.Element(XName.Get("pubDate")).Value))
+        Assert.True(
+            pubDates.[0] <= pubDates.[1],
+            sprintf "Expected oldest-first but got %A then %A" pubDates.[0] pubDates.[1])
+    })
+```
+
+**Acceptance criteria:**
+- [ ] The test no longer references any title substring.
+- [ ] The test passes with the current fixture and would fail if items were returned
+      newest-first.
 
 ---
 
 ## Re-review Checklist
 
-When resubmitting, confirm:
+When resubmitting, confirm each item is resolved:
 
-- [ ] B-1: Copy button present, works, styled, E2E test updated/added
-- [ ] B-2: `perDay ≤ 0` returns `InvalidPerDay`; two new unit tests added
-- [ ] B-3: ULA and IPv4-mapped IPv6 blocked; unit tests and property test added
-- [ ] R-1: Summary wording matches FR-08
-- [ ] R-2: DNS uses async overload
-- [ ] R-4: Dead `AggregateException` arm removed
-- [ ] R-5: Dual sort resolved (one owner)
-- [ ] R-6: HTTP timeout configured
+**Blocking:**
+- [ ] B-1: Dockerfile updated to `dotnet/sdk:10.0` and `dotnet/aspnet:10.0`; Docker build passes
+- [ ] B-2: `0.0.0.0` blocked in `isPrivateOrLoopback`; two new unit tests added and passing
+- [ ] B-3: Fail-open test added and passing; DNS limitation documented in `REQUIREMENTS.md`
+
+**Recommended:**
+- [ ] R-1: Copy button uses `data-` attribute; no `Host` header injection surface
+- [ ] R-2: `DripCalculator` uses `int64` intermediate; overflow regression test added
+- [ ] R-3: `perDay` upper-bound check added; unit test for `perDay = 1001` added
+- [ ] R-4: Dead `futureClock` binding removed
+- [ ] R-5: E2E ordering test asserts on `pubDate` comparison, not title substring

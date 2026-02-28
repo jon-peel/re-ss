@@ -1,383 +1,149 @@
-# Technical Specification: RSS Catch-Up Feed Generator
+# Technical Specification: Observability — Tracing & Metrics
 
-**Version:** 1.0
-**Date:** 2026-02-27
-**Status:** Approved
+**Change:** Add OpenTelemetry tracing and metrics to the RSS Catch-Up Feed Generator
+**Date:** 2026-02-28
+**Status:** Approved for implementation
 
 ---
 
-## 1. Tech Stack
+## 1. Overview
 
-| Concern | Choice | Rationale |
+This change adds OpenTelemetry (OTEL) instrumentation to the existing ReSS application. No existing functional behaviour is changed. Three metrics counters are added, full distributed traces are produced for every inbound request, and the export destination is kept configurable so a production backend can be wired in later. Local development uses the .NET Aspire dashboard for zero-friction trace and metric visualisation.
+
+---
+
+## 2. Tech Stack (additions only)
+
+The existing stack is F# / .NET 10 / ASP.NET Core / Giraffe. The following is added:
+
+| Concern | Package | Version |
 |---|---|---|
-| Language | **F#** | Strongly-typed, FP-first, excellent Result/Option primitives |
-| Runtime | **.NET 9** | Current stable release; good performance, broad library support |
-| Web Framework | **Giraffe** | Idiomatic F# HTTP handler composition over ASP.NET Core |
-| HTML Rendering | **Giraffe.ViewEngine** | Pure F# DSL for server-rendered HTML; no templating engine needed |
-| FP Utilities | **FSharp.Plus** | Railway-oriented programming (`>>=`, `<!>`, `Validation`, `Result`) |
-| RSS Parsing | **System.ServiceModel.Syndication** | Built-in .NET; RSS 2.0 coverage is sufficient; zero extra dependency |
-| In-Memory Cache | **Microsoft.Extensions.Caching.Memory** (`IMemoryCache`) | Native .NET; TTL-based eviction; no infrastructure needed |
-| Unit/Integration Tests | **xUnit + FsCheck** | Conventional tooling + property-based testing for edge cases |
-| E2E Tests | **Microsoft.Playwright** (.NET bindings) | Full browser automation; tests against the running server |
-| TDD Discipline | **Red-Green-Refactor** | All business rule modules built test-first |
+| OTEL hosting integration | `OpenTelemetry.Extensions.Hosting` | 1.15.0 |
+| ASP.NET Core auto-instrumentation | `OpenTelemetry.Instrumentation.AspNetCore` | 1.15.0 |
+| HttpClient auto-instrumentation | `OpenTelemetry.Instrumentation.Http` | 1.15.0 |
+| OTLP exporter | `OpenTelemetry.Exporter.OpenTelemetryProtocol` | 1.15.0 |
+| Local dev dashboard | `Aspire.Hosting.AppHost` | 13.1.2 |
+| Aspire hosting core | `Aspire.Hosting` | 13.1.2 |
+
+**All OTEL packages are added to `src/ReSS` only. The AppHost project is dev-only and is not deployed.**
 
 ---
 
-## 2. Architecture Overview
+## 3. Architecture
 
-The system is a **single-process, stateless web application** hosted on ASP.NET Core + Kestrel. There is no database, no session state, and no background workers. All feed configuration is carried in the URL itself.
+### 3.1 Instrumentation primitives
+
+The .NET standard `System.Diagnostics` primitives are used — **not** OTEL SDK types directly:
+
+- **Tracing:** `System.Diagnostics.ActivitySource` — one instance named `"ReSS"`, registered as a singleton in DI.
+- **Metrics:** `System.Diagnostics.Metrics.Meter` — one instance named `"ReSS"`, registered as a singleton in DI.
+
+The OTEL SDK is wired once at the composition root (`Program.fs`) to listen to the `"ReSS"` source. No OTEL types appear in domain modules or handlers — they remain decoupled from the telemetry vendor.
+
+### 3.2 New file: `Telemetry.fs`
+
+A single new F# module `ReSS.Telemetry` is added to `src/ReSS`. It defines:
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                  ASP.NET Core / Kestrel             │
-│                                                     │
-│  ┌──────────────┐        ┌────────────────────────┐ │
-│  │  GET /       │        │  GET /feed/{blob}      │ │
-│  │  Web Form    │        │  Feed Endpoint         │ │
-│  │  (ViewEngine)│        │  (RSS XML output)      │ │
-│  └──────┬───────┘        └──────────┬─────────────┘ │
-│         │                           │               │
-│         ▼                           ▼               │
-│  ┌─────────────────────────────────────────────┐    │
-│  │              Domain / Business Logic         │    │
-│  │                                             │    │
-│  │  UrlCodec      FeedFetcher    DripCalculator│    │
-│  │  (encode/      (HTTP +        (article      │    │
-│  │   decode)       IMemoryCache)  slicing)     │    │
-│  └─────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────┘
+ActivitySource  — named "ReSS"
+Meter           — named "ReSS"
+
+Counters (all Counter<int>):
+  feed.urls_created         — incremented on successful POST / (FR-20)
+  feed.requests             — incremented on every GET /feed/{blob} (FR-21)
+  feed.source_url_requests  — incremented on every GET /feed/{blob},
+                              tagged with source_url=<decoded URL> (FR-22)
 ```
 
-### Request flows
+This module is compiled before `Handlers.fs` in the `.fsproj` order.
 
-**Form submission (`POST /`)**
-1. Validate form inputs (URL format, articles-per-day > 0, date parseable).
-2. `UrlGuard.validateUrl` — reject private/loopback addresses with inline error.
-3. Fetch + parse the upstream RSS feed via `FeedFetcher`.
-4. On failure → return form with inline error (FR-05).
-5. On success → encode parameters via `UrlCodec`, compute unlocked count, render result (FR-06, FR-07, FR-08).
+### 3.3 OTEL wiring (`Program.fs`)
 
-**Feed poll (`GET /feed/{blob}`)**
-1. Decode `blob` via `UrlCodec`; return 400 on malformed input (FR-17).
-2. `UrlGuard.validateUrl` — reject private/loopback addresses with 400.
-3. Fetch + parse upstream feed via `FeedFetcher` (cache hit or live fetch).
-4. Compute unlocked article count via `DripCalculator`.
-5. If fully caught up → 301 redirect to original URL (FR-14).
-6. Otherwise → slice items oldest-first, build RSS XML, return 200.
+`builder.Services.AddOpenTelemetry()` is called at startup, configuring:
 
----
+- **Tracing:** listen to `"ReSS"` ActivitySource + ASP.NET Core instrumentation + HttpClient instrumentation; OTLP exporter enabled.
+- **Metrics:** listen to `"ReSS"` Meter + ASP.NET Core metrics; OTLP exporter enabled.
 
-## 3. Module Breakdown
+The OTLP endpoint and headers are read from standard environment variables:
 
-### 3.1 `UrlCodec` module
-
-Responsible for encoding and decoding the opaque feed parameter blob.
-
-**Codec format:**
-```
-v1 :: urlencode(sourceUrl) :: articlesPerDay :: startDate(YYYY-MM-DD)
-```
-encoded as Base64url with `=` padding stripped.
-
-**Example (decoded):**
-```
-v1::https%3A%2F%2Fexample.com%2Ffeed::3::2026-02-27
-```
-
-**Functions:**
-```fsharp
-encode : sourceUrl: string -> perDay: int<articles/day> -> startDate: StartDate -> string
-decode : blob: string -> Result<FeedParams, DecodeError>
-```
-
-`decode` is the primary error surface — all parse/validation failures become `Result.Error`. This is a pure module with no I/O; ideal for property-based testing.
-
-> ℹ️ **Versioning:** The `v1::` prefix allows future codec versions to be introduced without breaking existing subscriber URLs. The decoder checks the version segment first and returns `DecodeError.UnsupportedVersion` for unknown versions.
-
----
-
-### 3.2 `UrlGuard` module
-
-Validates a user-supplied URL before any HTTP request is made. Prevents SSRF by rejecting private, loopback, and link-local addresses.
-
-**Functions:**
-```fsharp
-validateUrl : string -> Async<Result<string, UrlGuardError>>
-```
-
-Async because DNS resolution is required — hostname-only checks are insufficient (a public hostname could resolve to a private IP).
-
-**Validation pipeline (in order):**
-1. **Scheme** — reject anything that is not `http` or `https`
-2. **Parse** — reject malformed URLs
-3. **DNS resolution** — resolve the hostname to one or more IP addresses
-4. **IP range check** — reject if any resolved address falls within:
-
-| Range | Description |
+| Variable | Purpose |
 |---|---|
-| `127.0.0.0/8`, `::1` | Loopback |
-| `169.254.0.0/16`, `fe80::/10` | Link-local (incl. cloud metadata endpoint) |
-| `10.0.0.0/8` | Private class A |
-| `172.16.0.0/12` | Private class B |
-| `192.168.0.0/16` | Private class C |
-| `0.0.0.0/8` | Unspecified |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | OTLP collector endpoint URL |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Auth headers (e.g. for cloud backends) |
+| `OTEL_SERVICE_NAME` | Service name shown in traces (default: `"ReSS"`) |
 
-> ⚠️ **DNS resolution is mandatory.** Checking the hostname string alone is bypassed trivially (e.g. `http://evil.com` resolving to `127.0.0.1`). The guard resolves first, then checks the resulting IPs.
+In local dev, Aspire injects these automatically. In production, operators set them in the deployment environment.
 
-> ℹ️ All resolved IPs are checked — if a hostname resolves to multiple addresses and any one is private, the request is rejected.
+### 3.4 Spans per endpoint
 
-This module is pure logic around `Dns.GetHostAddressesAsync` with no HTTP side effects. Ideal for property-based testing: generate arbitrary addresses from each blocked range and assert rejection; generate public addresses and assert acceptance.
+All child spans are created in handlers. Domain modules are untouched.
 
----
+**`GET /feed/{blob}`**
 
-### 3.3 `FeedFetcher` module
-
-Responsible for fetching and parsing an upstream RSS feed.
-
-**Functions:**
-```fsharp
-fetchFeed : httpClient: HttpClient -> cache: IMemoryCache -> url: string
-          -> Async<Result<SyndicationFeed, FetchError>>
-```
-
-- Checks `IMemoryCache` first (keyed by source URL, TTL = 15 minutes).
-- On cache miss: HTTP GET the URL, validate content-type is XML, parse with `SyndicationFeed.Load`.
-- Errors are wrapped into a discriminated union `FetchError` (UnreachableUrl | NotXml | ParseFailure | HttpError of int).
-- `HttpClient` is injected (registered as a singleton via DI) to enable mocking in tests.
-
----
-
-### 3.3 `DripCalculator` module
-
-Pure business logic. No I/O. All functions are total and deterministic.
-
-**Types:**
-```fsharp
-[<Measure>] type articles
-[<Measure>] type day
-
-type StartDate = StartDate of DateOnly
-
-type DripResult =
-    | ShowItems of count: int<articles>
-    | RedirectToSource
-```
-
-**Functions:**
-```fsharp
-calculate : clock: Clock -> StartDate -> perDay: int<articles/day>
-          -> totalItems: int<articles> -> DripResult
-```
-
-**Logic:**
-```
-daysElapsed = max(0, clock() - startDate)   // int<day>
-unlocked    = min(daysElapsed × perDay, totalItems)  // int<articles>
-result      = if unlocked >= totalItems then RedirectToSource
-              else ShowItems unlocked
-```
-
-The units of measure make the arithmetic dimensionally type-safe — the compiler enforces that `int<day> × int<articles/day>` yields `int<articles>`, and that `unlocked` and `totalItems` are comparable only because they share the same unit.
-
-> ℹ️ **Clock:** `Today` does not appear in the domain signature. Instead a `Clock` (see §4) is injected at the composition root. Production wires `fun () -> DateOnly.FromDateTime(DateTime.Today)`; tests supply a fixed date. The domain stays clean of test concerns.
-
----
-
-### 3.4 `FeedBuilder` module
-
-Constructs a valid RSS 2.0 XML response from a `SyndicationFeed` and a slice of items.
-
-**Functions:**
-```fsharp
-buildFeed : feed: SyndicationFeed -> items: SyndicationItem list
-          -> unlockedCount: int<articles> -> totalCount: int<articles>
-          -> string  // RSS XML string
-```
-
-- Copies metadata from source feed (title, description, link, language, etc.).
-- Appends `n/t` progress indicator to feed title (FR-16).
-- Items are provided pre-sliced and pre-ordered (oldest-first) by the caller.
-- Returns a well-formed RSS 2.0 XML string.
-
----
-
-### 3.5 Web Handlers (Giraffe)
-
-Two HTTP handlers wired via Giraffe's `choose` router:
-
-| Route | Method | Handler |
-|---|---|---|
-| `/` | GET | Render empty form |
-| `/` | POST | Validate → fetch → encode → render result or errors |
-| `/feed/{blob}` | GET | Decode → fetch → calculate → redirect or return XML |
-
-HTML is rendered via **Giraffe.ViewEngine** — pure F# functions, no `.cshtml` files.
-
----
-
-## 4. Data Model
-
-No persistent data. All runtime data is transient:
-
-### Measures and value types
-```fsharp
-// Units of measure — erased at runtime, enforced at compile time
-[<Measure>] type articles
-[<Measure>] type day
-
-// Single-case DU — prevents StartDate/DateOnly confusion at call sites
-type StartDate = StartDate of DateOnly
-
-// Clock abstraction — injected at composition root, keeps test concerns out of domain
-type Clock = unit -> DateOnly
-```
-
-### `FeedParams` (decoded from URL blob)
-```fsharp
-type FeedParams = {
-    SourceUrl  : string
-    PerDay     : int<articles/day>
-    StartDate  : StartDate
-}
-```
-
-### `UrlGuardError`
-```fsharp
-type UrlGuardError =
-    | NonHttpScheme
-    | MalformedUrl
-    | PrivateOrLoopbackAddress of resolvedIp: string
-```
-
-### `FetchError` (discriminated union)
-```fsharp
-type FetchError =
-    | UnreachableUrl
-    | NotXml
-    | ParseFailure of message: string
-    | HttpError    of statusCode: int
-```
-
-### `DecodeError`
-```fsharp
-type DecodeError =
-    | InvalidBase64
-    | MalformedSegments
-    | UnsupportedVersion of version: string
-    | InvalidPerDay
-    | InvalidDate
-```
-
-### In-memory cache
-- **Key:** source URL string
-- **Value:** `SyndicationFeed` (parsed object)
-- **TTL:** 15 minutes (absolute expiry)
-- **Scope:** process lifetime; not persisted across restarts
-
----
-
-## 5. API / Integration Design
-
-### `GET /feed/{blob}`
-
-| Condition | Response |
+| Span name | Wraps |
 |---|---|
-| Malformed blob | `400 Bad Request` with plain-text error |
-| Source URL unreachable | `502 Bad Gateway` |
-| Source not valid RSS XML | `502 Bad Gateway` with description |
-| Fully caught up | `301 Moved Permanently` → original feed URL |
-| Normal operation | `200 OK`, `Content-Type: application/rss+xml` |
+| `ress.url_decode` | `UrlCodec.decode` |
+| `ress.url_guard` | `UrlGuard.validateUrl` |
+| `ress.feed_fetch` | `FeedFetcher.fetchFeed` |
+| `ress.drip_calculate` | `DripCalculator.calculate` |
+| `ress.feed_build` | `FeedBuilder.buildFeed` |
 
-### `POST /`
+**`POST /`**
 
-| Condition | Response |
+| Span name | Wraps |
 |---|---|
-| Validation errors | `200 OK` — form re-rendered with inline error messages |
-| Source URL unreachable | `200 OK` — form re-rendered with specific fetch error |
-| Success | `200 OK` — form rendered with generated URL + summary |
+| `ress.url_guard` | `UrlGuard.validateUrl` |
+| `ress.feed_fetch` | `FeedFetcher.fetchFeed` |
+| `ress.drip_calculate` | `DripCalculator.calculate` |
 
-> ℹ️ **Assumption:** The form always returns HTTP 200 (standard HTML form pattern). Errors are inline, not HTTP error codes, since this is a browser-facing page.
+`GET /` has no bespoke child spans — the ASP.NET Core instrumentation covers the request.
 
----
+### 3.5 Error recording
 
-## 6. RSS Feed Output Specification
+For any caught exception or error result in the handler pipeline:
 
-The `/feed` endpoint returns RSS 2.0 XML with:
+1. `activity.SetStatus(ActivityStatusCode.Error, message)` — marks the span as failed.
+2. `activity.RecordException(exn)` — attaches exception details to the span (FR-25).
 
-- `<channel>` metadata copied from source feed (title + " — n/t", description, link, language, etc.)
-- `<item>` elements for the unlocked slice, ordered **oldest first** (reverse of typical RSS order)
-- `Content-Type: application/rss+xml; charset=utf-8`
+### 3.6 Local dev: Aspire AppHost
 
-> ⚠️ **Risk:** `System.ServiceModel.Syndication` orders items as they appear in the source feed (typically newest-first). The `FeedBuilder` must explicitly reverse the item list before slicing to ensure oldest-first delivery (FR-13).
+A new project `src/ReSS.AppHost` (C#, `Aspire.Hosting.AppHost` 13.1.2) is added to the solution. It:
 
----
-
-## 7. Security Considerations
-
-- No authentication or authorisation required (per spec).
-- The blob encoding is not cryptographically secure — it is obfuscation only. This is explicitly acceptable per requirements.
-- All upstream HTTP requests are made server-side. User-supplied URLs are validated by `UrlGuard` before any request is made.
-
-> ℹ️ **SSRF mitigated:** `UrlGuard` rejects non-HTTP/S schemes, loopback addresses, link-local ranges (including cloud metadata endpoints at `169.254.169.254`), and RFC-1918 private ranges. DNS resolution is performed during validation so hostname-based bypasses are not possible.
-
-- No user input is rendered as raw HTML (Giraffe.ViewEngine encodes by default).
+- References `src/ReSS` as an Aspire resource.
+- Starts the Aspire developer dashboard, which includes a built-in OTEL collector and UI for traces and metrics.
+- Is **not** included in the production `Dockerfile` or any deployment artefact.
 
 ---
 
-## 8. Non-Functional Requirements
+## 4. Data model / storage
 
-| Concern | Approach |
+No change. Telemetry data is exported out-of-process to an OTEL collector. Nothing is stored in the application.
+
+---
+
+## 5. Security considerations
+
+- The `source_url` tag on `feed.source_url_requests` exposes upstream RSS URLs in telemetry. This is acceptable given the private/trusted-user nature of the system, but operators should treat the OTEL backend as a sensitive destination.
+- No new HTTP endpoints are added to the production application.
+
+---
+
+## 6. Non-functional requirements
+
+| Requirement | Approach |
 |---|---|
-| **Performance** | In-memory cache (15 min TTL) absorbs repeated polls. Sufficient for small user count. |
-| **Observability** | ASP.NET Core default logging (`ILogger`) to stdout. Structured log on each feed fetch (hit/miss/error). |
-| **Reliability** | Errors propagated as typed `Result` values throughout; no unhandled exceptions in business logic. |
-| **Deployability** | Single `dotnet publish` artifact; runs on any host with .NET 9 runtime. Suitable for Fly.io, Railway, Render, or a VPS. |
-| **Testability** | All business logic is pure or has injected dependencies. No static state. |
+| Standard | All instrumentation via OpenTelemetry |
+| Dev experience | Aspire dashboard — zero manual setup |
+| Configurable export | Standard OTEL env vars, no hardcoded backend |
+| Overhead | Negligible at expected load; `ActivitySource`/`Meter` are no-ops when no listener is attached |
 
 ---
 
-## 9. Project Structure
+## 7. Known constraints and trade-offs
 
-```
-re-ss/
-├── src/
-│   └── ReSS/
-│       ├── Program.fs              # ASP.NET Core entry point, DI, routing
-│       ├── Handlers.fs             # Giraffe HTTP handlers
-│       ├── Views.fs                # Giraffe.ViewEngine HTML
-│       ├── Domain/
-│       │   ├── Types.fs            # Shared types (FeedParams, errors, measures, Clock)
-│       │   ├── UrlCodec.fs         # encode / decode (pure)
-│       │   ├── UrlGuard.fs         # SSRF protection — scheme + DNS + IP range checks
-│       │   ├── DripCalculator.fs   # calculate (pure)
-│       │   ├── FeedFetcher.fs      # HTTP + cache (async, injectable)
-│       │   └── FeedBuilder.fs      # RSS XML construction (pure-ish)
-│       └── ReSS.fsproj
-├── tests/
-│   ├── ReSS.Tests/
-│   │   ├── UrlCodecTests.fs        # xUnit + FsCheck property tests
-│   │   ├── DripCalculatorTests.fs  # xUnit + FsCheck property tests
-│   │   ├── FeedBuilderTests.fs     # xUnit unit tests
-│   │   ├── UrlGuardTests.fs         # xUnit + FsCheck: IP range rejection properties
-│   │   ├── FeedFetcherTests.fs     # xUnit integration tests (mock HttpClient)
-│   │   ├── HandlerTests.fs         # xUnit integration tests (TestServer)
-│   │   └── ReSS.Tests.fsproj
-│   └── ReSS.E2E/
-│       ├── FormTests.fs            # Playwright: form interaction flows
-│       ├── FeedEndpointTests.fs    # Playwright: /feed endpoint scenarios
-│       └── ReSS.E2E.fsproj
-└── re-ss.sln
-```
-
----
-
-## 10. Known Constraints and Trade-offs
-
-| Constraint | Implication |
+| Item | Detail |
 |---|---|
-| Stateless by design | No rate limiting, no per-user tracking, no analytics — all acceptable per spec |
-| In-memory cache only | Cache is lost on restart; acceptable for small deployment |
-| `System.ServiceModel.Syndication` | RSS 2.0 only — Atom feeds will fail at parse time (out of scope per spec) |
-| Base64url codec | Not tamper-proof; opaque to casual inspection only |
-| Oldest-first ordering | Source feeds are newest-first; explicit reversal required in `FeedBuilder` |
-| Codec versioned at `v1` | Future breaking changes introduce a new version prefix; old URLs remain decodable by a v1-aware decoder |
+| `source_url` tag cardinality | Could cause high-cardinality metric series in some backends. Acceptable at this scale — a handful of source feeds expected. |
+| Aspire AppHost targets .NET 8 | Aspire 13.x targets .NET 8 as baseline but runs fine hosting a .NET 10 project. No incompatibility in practice. |
+| OTEL SDK in `src/ReSS` | Adds ~4 NuGet packages to the main project. Kept to a minimum; only the packages needed for OTLP export are included. |
+| Domain modules remain pure | Spans are created in handlers only. This is a deliberate trade-off: domain code stays testable and OTEL-free, at the cost of slightly more verbose handler code. |

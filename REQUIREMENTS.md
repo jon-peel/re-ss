@@ -99,6 +99,41 @@ There are no admin roles, no public registration, and no user accounts.
 
 There are no outstanding open questions.
 
+---
+
+## Change 2: Observability — Tracing & Metrics
+
+### Overview
+
+Add observability to the system so that slowness, failures, and exceptions can be detected and traced to their source. All instrumentation must conform to the OpenTelemetry standard. The export destination is not yet determined and must be left configurable.
+
+### Functional Requirements
+
+#### Metrics
+
+- FR-20: The system shall record a count each time a feed URL is successfully created (i.e. a `POST /` submission results in a generated feed URL).
+- FR-21: The system shall record a count each time a feed is requested via the `/feed/{blob}` endpoint.
+- FR-22: The system shall record a count per unique source RSS URL, tracking how many times each upstream feed URL has been used across both feed creation and feed requests.
+
+#### Tracing
+
+- FR-23: The system shall produce a trace for every inbound HTTP request across all endpoints (`GET /`, `POST /`, `GET /feed/{blob}`).
+- FR-24: Each trace shall include spans covering every meaningful step in the request pipeline — including URL decoding, SSRF validation, upstream feed fetching, drip calculation, and feed building — so that the source of any slowness, failure, or exception can be pinpointed.
+- FR-25: Exceptions and errors encountered during processing shall be captured and attached to the relevant span so they are visible in the trace.
+
+### Non-Functional Requirements
+
+- **Standard:** All instrumentation must use OpenTelemetry.
+- **Dev environment:** Instrumentation must be compatible with Aspire's built-in OTEL support for local development observation.
+- **Export destination:** The OTEL export target must be configurable (not hardcoded), so it can be connected to a production backend at a later date.
+- **Overhead:** Instrumentation must not materially affect response times for the expected low-concurrency load.
+
+### Out of Scope
+
+- Selection or provisioning of a production OTEL backend — this is deferred.
+- Alerting or dashboards.
+- Per-user or per-subscriber analytics.
+
 ## 12. Security — Known Limitations
 
 ### SSRF Guard: DNS fail-open

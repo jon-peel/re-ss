@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/ReSS/ReSS.fsproj" />
+    <Project Path="src/ReSS.AppHost/ReSS.AppHost.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/ReSS.E2E/ReSS.E2E.fsproj" />

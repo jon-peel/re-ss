@@ -12,6 +12,7 @@
     <Compile Include="Domain/FeedFetcher.fs" />
     <Compile Include="Domain/FeedBuilder.fs" />
     <Compile Include="Views.fs" />
+    <Compile Include="Telemetry.fs" />
     <Compile Include="Handlers.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
@@ -21,6 +22,10 @@
     <PackageReference Include="Giraffe" Version="8.2.0" />
     <PackageReference Include="Giraffe.ViewEngine" Version="1.4.0" />
     <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.3" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.11.2" />
+    <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.11.2" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.11.1" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.11.1" />
     <PackageReference Include="System.ServiceModel.Syndication" Version="10.0.3" />
   </ItemGroup>
 

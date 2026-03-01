@@ -75,14 +75,14 @@ F# / .NET 9 / ASP.NET Core / Giraffe web application. Single process, stateless,
 
 ## Package Versions
 
-Pinned at time of spec (2026-02-28):
+Pinned at time of implementation (2026-02-28). Note: version 1.15.0 cited in the original spec does not exist on NuGet; 1.11.x was the latest stable release at the time.
 
 | Package | Version |
 |---|---|
-| `OpenTelemetry.Extensions.Hosting` | 1.15.0 |
-| `OpenTelemetry.Instrumentation.AspNetCore` | 1.15.0 |
-| `OpenTelemetry.Instrumentation.Http` | 1.15.0 |
-| `OpenTelemetry.Exporter.OpenTelemetryProtocol` | 1.15.0 |
+| `OpenTelemetry.Extensions.Hosting` | 1.11.2 |
+| `OpenTelemetry.Instrumentation.AspNetCore` | 1.11.1 |
+| `OpenTelemetry.Instrumentation.Http` | 1.11.1 |
+| `OpenTelemetry.Exporter.OpenTelemetryProtocol` | 1.11.2 |
 | `Aspire.Hosting.AppHost` | 13.1.2 |
 | `Aspire.Hosting` | 13.1.2 |
 

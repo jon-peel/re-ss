@@ -15,12 +15,14 @@ open ReSS.Domain.DripCalculator
 open ReSS.Domain.FeedFetcher
 open ReSS.Domain.FeedBuilder
 open ReSS.Views
+open OpenTelemetry.Trace
 open ReSS.Telemetry
 
 // ---- helpers ----
 
 /// Wrap a synchronous computation in a child Activity span.
-/// Marks the span as Error (with the supplied message) when `isError` is true.
+/// Marks the span as Error when `isError` is true for Result-based errors,
+/// and also records any thrown exception on the span before re-raising.
 let inline private withSpan
     (name: string)
     (isError: 'a -> bool)
@@ -28,12 +30,19 @@ let inline private withSpan
     (body: unit -> 'a)
     : 'a =
     use activity = activitySource.StartActivity(name)
-    let result = body ()
-    if activity <> null && isError result then
-        activity.SetStatus(ActivityStatusCode.Error, errorMsg result) |> ignore
-    result
+    try
+        let result = body ()
+        if activity <> null && isError result then
+            activity.SetStatus(ActivityStatusCode.Error, errorMsg result) |> ignore
+        result
+    with ex ->
+        if activity <> null then
+            activity.SetStatus(ActivityStatusCode.Error, ex.Message) |> ignore
+            activity.AddException(ex) |> ignore
+        reraise ()
 
 /// Wrap an Async computation in a child Activity span.
+/// Marks the span as Error for Result-based errors and records thrown exceptions.
 let inline private withSpanAsync
     (name: string)
     (isError: 'a -> bool)
@@ -42,10 +51,16 @@ let inline private withSpanAsync
     : Async<'a> =
     async {
         use activity = activitySource.StartActivity(name)
-        let! result = body ()
-        if activity <> null && isError result then
-            activity.SetStatus(ActivityStatusCode.Error, errorMsg result) |> ignore
-        return result
+        try
+            let! result = body ()
+            if activity <> null && isError result then
+                activity.SetStatus(ActivityStatusCode.Error, errorMsg result) |> ignore
+            return result
+        with ex ->
+            if activity <> null then
+                activity.SetStatus(ActivityStatusCode.Error, ex.Message) |> ignore
+                activity.AddException(ex) |> ignore
+            return raise ex
     }
 
 let private isResultError r = match r with | Error _ -> true | Ok _ -> false

@@ -13,30 +13,7 @@ let private layout (pageTitle: string) (pageBody: XmlNode list) =
             meta [ _charset "utf-8" ]
             meta [ _name "viewport"; _content "width=device-width, initial-scale=1" ]
             title [] [ str pageTitle ]
-            tag "style" [] [ rawText """
-body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
-label { display: block; margin-top: 1rem; font-weight: 600; }
-input[type=text], input[type=number], input[type=date] {
-  width: 100%; padding: .5rem; margin-top: .25rem; box-sizing: border-box;
-  border: 1px solid #ccc; border-radius: 4px;
-}
-.error { color: #c00; font-size: .875rem; margin-top: .25rem; }
-.form-error { background: #fee; border: 1px solid #c00; padding: .75rem 1rem; border-radius: 4px; margin-bottom: 1rem; }
-button[type=submit] {
-  margin-top: 1.5rem; padding: .6rem 1.4rem; background: #0066cc; color: #fff;
-  border: none; border-radius: 4px; cursor: pointer; font-size: 1rem;
-}
-button[type=submit]:hover { background: #0055aa; }
-.result { background: #e8f5e9; border: 1px solid #388e3c; padding: 1rem; border-radius: 4px; margin-top: 1.5rem; }
-.result code { word-break: break-all; display: block; margin-top: .5rem; font-size: .9rem; }
-.copy-btn {
-  margin-top: .5rem; padding: .35rem .85rem; background: #fff; color: #388e3c;
-  border: 1px solid #388e3c; border-radius: 4px; cursor: pointer; font-size: .875rem;
-}
-.copy-btn:hover { background: #e8f5e9; }
-details { margin-top: 1rem; }
-summary { cursor: pointer; font-weight: 600; }
-""" ]
+            link [ _rel "stylesheet"; _href "/app.css" ]
         ]
         body [] (pageBody @ [
             script [] [ rawText """
@@ -68,42 +45,44 @@ let formView (state: FormState) =
         match state with
         | Success (url, n, t) ->
             div [ _class "result" ] [
-                p [] [ str (sprintf "Your new feed has %d of %d articles ready" n t) ]
-                p [] [ str "Your personalised feed URL:" ]
-                code [] [ str url ]
+                p [ _class "result-header" ] [ str (sprintf "✓  Feed ready — %d of %d articles today" n t) ]
+                p [ _class "result-label" ] [ str "Your personalised feed URL" ]
+                code [ _class "result-url" ] [ str url ]
                 button [
                     _type "button"
                     _class "copy-btn"
                     attr "data-copy-url" url
-                ] [ str "Copy" ]
+                ] [ str "Copy URL" ]
             ]
         | _ -> emptyText
 
-    layout "RSS Catch-Up Feed Generator" [
-        h1 [] [ str "RSS Catch-Up Feed Generator" ]
-        p [] [ str "Subscribe to an RSS feed at a comfortable pace." ]
+    layout "RSS Catch-Up" [
+        h1 [] [ str "RSS Catch-Up" ]
+        p [ _class "subtitle" ] [ str "Subscribe to an RSS feed at your own pace." ]
 
         (match formError with
          | Some msg -> div [ _class "form-error" ] [ str msg ]
          | None -> emptyText)
 
-        form [ _method "post"; _action "/" ] [
-            label [] [ str "RSS Feed URL" ]
-            input [ _type "text"; _name "sourceUrl"; _value sourceVal; _placeholder "https://example.com/feed" ]
-            fieldError "sourceUrl"
+        div [ _class "card" ] [
+            form [ _method "post"; _action "/" ] [
+                label [ _class "field-label" ] [ str "RSS Feed URL" ]
+                input [ _type "text"; _name "sourceUrl"; _value sourceVal; _placeholder "https://example.com/feed" ]
+                fieldError "sourceUrl"
 
-            label [] [ str "Articles per day" ]
-            input [ _type "number"; _name "perDay"; _value perDayVal; _min "1"; _max "1000" ]
-            fieldError "perDay"
+                label [ _class "field-label" ] [ str "Articles per day" ]
+                input [ _type "number"; _name "perDay"; _value perDayVal; _min "1"; _max "1000"; _class "input-narrow" ]
+                fieldError "perDay"
 
-            details [] [
-                summary [] [ str "Advanced options" ]
-                label [] [ str "Start date" ]
-                input [ _type "date"; _name "startDate" ]
-                fieldError "startDate"
+                details [] [
+                    summary [] [ str "Advanced options" ]
+                    label [ _class "field-label" ] [ str "Start date" ]
+                    input [ _type "date"; _name "startDate" ]
+                    fieldError "startDate"
+                ]
+
+                button [ _type "submit" ] [ str "Generate feed URL →" ]
             ]
-
-            button [ _type "submit" ] [ str "Generate feed URL" ]
         ]
 
         resultSection

@@ -61,6 +61,7 @@ let main args =
     if not (app.Environment.IsDevelopment()) then
         app.UseHsts() |> ignore
 
+    app.UseStaticFiles() |> ignore   // serve wwwroot/
     app.UseGiraffe(webApp)
     app.Run()
     0

@@ -98,7 +98,7 @@ type FormTests(bfx: BrowserFixture) =
             do! page.Locator("button[type=submit]").ClickAsync()
             // First <p> inside .result is "N of T articles ready"
             let! summaryText = page.Locator(".result p").First.TextContentAsync()
-            Assert.Contains("articles ready", summaryText)
+            Assert.Contains("articles today", summaryText)
             Assert.Contains("of", summaryText)
         })
 
@@ -132,7 +132,8 @@ type FormTests(bfx: BrowserFixture) =
             do! page.Locator("input[name=startDate]").FillAsync("2025-12-31")
             do! page.Locator("button[type=submit]").ClickAsync()
             let! summaryText = page.Locator(".result p").First.TextContentAsync()
-            Assert.StartsWith("Your new feed has 0 of", summaryText)
+            Assert.Contains("0 of", summaryText)
+            Assert.Contains("articles today", summaryText)
         })
 
     [<Fact>]

@@ -8,6 +8,7 @@ open Microsoft.Extensions.DependencyInjection
 open Microsoft.Extensions.Caching.Memory
 open Microsoft.Extensions.Logging
 open Giraffe
+open Giraffe.ViewEngine
 open ReSS.Domain.Types
 open ReSS.Domain.UrlCodec
 open ReSS.Domain.UrlGuard
@@ -19,6 +20,12 @@ open OpenTelemetry.Trace
 open ReSS.Telemetry
 
 // ---- helpers ----
+
+let private isHtmxRequest (ctx: HttpContext) =
+    ctx.Request.Headers.ContainsKey("HX-Request")
+
+let private partialHtml (node: XmlNode) : HttpHandler =
+    htmlString (RenderView.AsString.htmlNode node)
 
 /// Wrap a synchronous computation in a child Activity span.
 /// Marks the span as Error when `isError` is true for Result-based errors,
@@ -106,7 +113,13 @@ let postIndexHandler : HttpHandler =
                         None
 
             if not errors.IsEmpty then
-                return! htmlView (formView (FormError (rawUrl, rawPerDay, errors))) next ctx
+                let state = FormError (rawUrl, rawPerDay, errors)
+                if isHtmxRequest ctx then
+                    return! (setHttpHeader "HX-Retarget" "#form-card"
+                             >=> setHttpHeader "HX-Reswap" "outerHTML"
+                             >=> partialHtml (formCardPartial state)) next ctx
+                else
+                    return! htmlView (formView state) next ctx
             else
                 let client = ctx.RequestServices.GetRequiredService<Net.Http.HttpClient>()
                 let cache  = ctx.RequestServices.GetRequiredService<IMemoryCache>()
@@ -126,7 +139,13 @@ let postIndexHandler : HttpHandler =
                         | NonHttpScheme -> "Only http:// and https:// URLs are allowed."
                         | PrivateOrLoopbackAddress _ -> "That URL resolves to a private or loopback address."
                     let errs = Map.ofList ["form", msg]
-                    return! htmlView (formView (FormError (rawUrl, rawPerDay, errs))) next ctx
+                    let state = FormError (rawUrl, rawPerDay, errs)
+                    if isHtmxRequest ctx then
+                        return! (setHttpHeader "HX-Retarget" "#form-card"
+                                 >=> setHttpHeader "HX-Reswap" "outerHTML"
+                                 >=> partialHtml (formCardPartial state)) next ctx
+                    else
+                        return! htmlView (formView state) next ctx
                 | Ok uri ->
                     let logger = ctx.RequestServices.GetService<ILogger<obj>>()
                     let loggerOpt = if logger = null then None else Some (logger :> ILogger)
@@ -146,7 +165,13 @@ let postIndexHandler : HttpHandler =
                             | NotXml -> "The URL does not point to an RSS feed."
                             | ParseFailure m -> sprintf "Could not parse the RSS feed: %s" m
                         let errs = Map.ofList ["form", msg]
-                        return! htmlView (formView (FormError (rawUrl, rawPerDay, errs))) next ctx
+                        let state = FormError (rawUrl, rawPerDay, errs)
+                        if isHtmxRequest ctx then
+                            return! (setHttpHeader "HX-Retarget" "#form-card"
+                                     >=> setHttpHeader "HX-Reswap" "outerHTML"
+                                     >=> partialHtml (formCardPartial state)) next ctx
+                        else
+                            return! htmlView (formView state) next ctx
                     | Ok feed ->
                         let total = feed.Items |> Seq.length
                         let pd    = perDay.Value
@@ -169,7 +194,10 @@ let postIndexHandler : HttpHandler =
                         // --- 4.1 metric: feed URL created (FR-20) ---
                         feedUrlsCreated.Add(1)
 
-                        return! htmlView (formView (Success (generatedUrl, unlocked, total))) next ctx
+                        if isHtmxRequest ctx then
+                            return! partialHtml (resultPartial generatedUrl unlocked total) next ctx
+                        else
+                            return! htmlView (formView (Success (generatedUrl, unlocked, total))) next ctx
         }
 
 // ---- GET /feed/{blob} ----
